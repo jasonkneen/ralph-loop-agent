@@ -10,61 +10,37 @@ import type {
   CallSettings,
 } from 'ai';
 import type { ProviderOptions, SystemModelMessage } from '@ai-sdk/provider-utils';
-import type { RalphEvaluator } from './ralph-loop-agent-evaluator';
+import type { VerifyCompletionFunction } from './ralph-loop-agent-evaluator';
+import type { IterationStopCondition } from './ralph-loop-agent';
 
 /**
- * Callback invoked after each Ralph iteration completes.
+ * Callback invoked at the start of each iteration.
  */
-export type RalphLoopAgentOnIterationFinishCallback<TOOLS extends ToolSet = {}> = (event: {
+export type OnIterationStartCallback = (event: {
+  /**
+   * The iteration number (1-indexed).
+   */
+  readonly iteration: number;
+}) => void | Promise<void>;
+
+/**
+ * Callback invoked at the end of each iteration.
+ */
+export type OnIterationEndCallback<TOOLS extends ToolSet = {}> = (event: {
   /**
    * The iteration number (1-indexed).
    */
   readonly iteration: number;
 
   /**
+   * Duration of the iteration in milliseconds.
+   */
+  readonly duration: number;
+
+  /**
    * The result of this iteration.
    */
   readonly result: GenerateTextResult<TOOLS, never>;
-
-  /**
-   * Whether this iteration was determined to be complete.
-   */
-  readonly isComplete: boolean;
-
-  /**
-   * Feedback from the evaluator (if any).
-   */
-  readonly feedback?: string;
-
-  /**
-   * Reason from the evaluator (if any).
-   */
-  readonly reason?: string;
-}) => void | Promise<void>;
-
-/**
- * Callback invoked when all iterations are finished.
- */
-export type RalphLoopAgentOnFinishCallback<TOOLS extends ToolSet = {}> = (event: {
-  /**
-   * The total number of iterations that were executed.
-   */
-  readonly totalIterations: number;
-
-  /**
-   * The final result.
-   */
-  readonly result: GenerateTextResult<TOOLS, never>;
-
-  /**
-   * Whether the task was completed successfully or stopped due to max iterations.
-   */
-  readonly completedSuccessfully: boolean;
-
-  /**
-   * All results from each iteration.
-   */
-  readonly allResults: Array<GenerateTextResult<TOOLS, never>>;
 }) => void | Promise<void>;
 
 /**
@@ -101,22 +77,25 @@ export type RalphLoopAgentSettings<TOOLS extends ToolSet = {}> = Omit<
   toolChoice?: ToolChoice<NoInfer<TOOLS>>;
 
   /**
-   * Condition for stopping the inner tool loop.
+   * When to stop the outer Ralph loop.
+   * Use iterationCountIs(n) to stop after n iterations.
+   *
+   * @default iterationCountIs(10)
+   */
+  stopWhen?: IterationStopCondition;
+
+  /**
+   * When to stop the inner tool loop within each iteration.
+   *
    * @default stepCountIs(20)
    */
-  stopWhen?: StopCondition<NoInfer<TOOLS>> | Array<StopCondition<NoInfer<TOOLS>>>;
+  toolStopWhen?: StopCondition<NoInfer<TOOLS>> | Array<StopCondition<NoInfer<TOOLS>>>;
 
   /**
-   * The evaluator to determine when the task is complete.
-   * This controls the outer Ralph loop.
+   * Function to verify if the task is complete.
+   * Called after each iteration.
    */
-  evaluator: RalphEvaluator<NoInfer<TOOLS>>;
-
-  /**
-   * Maximum number of Ralph iterations (outer loop).
-   * @default 10
-   */
-  maxIterations?: number;
+  verifyCompletion?: VerifyCompletionFunction<NoInfer<TOOLS>>;
 
   /**
    * Optional telemetry configuration.
@@ -139,14 +118,14 @@ export type RalphLoopAgentSettings<TOOLS extends ToolSet = {}> = Omit<
   experimental_repairToolCall?: ToolCallRepairFunction<NoInfer<TOOLS>>;
 
   /**
-   * Callback invoked after each Ralph iteration.
+   * Called at the start of each iteration.
    */
-  onIterationFinish?: RalphLoopAgentOnIterationFinishCallback<NoInfer<TOOLS>>;
+  onIterationStart?: OnIterationStartCallback;
 
   /**
-   * Callback invoked when all iterations are complete.
+   * Called at the end of each iteration.
    */
-  onFinish?: RalphLoopAgentOnFinishCallback<NoInfer<TOOLS>>;
+  onIterationEnd?: OnIterationEndCallback<NoInfer<TOOLS>>;
 
   /**
    * Additional provider-specific options.

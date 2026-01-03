@@ -1,25 +1,21 @@
 // Main agent export
-export { RalphLoopAgent } from './ralph-loop-agent';
+export { RalphLoopAgent, iterationCountIs } from './ralph-loop-agent';
 export type {
   RalphLoopAgentCallParameters,
   RalphLoopAgentResult,
+  IterationStopCondition,
 } from './ralph-loop-agent';
 
 // Settings types
 export type {
   RalphLoopAgentSettings,
-  RalphLoopAgentOnIterationFinishCallback,
-  RalphLoopAgentOnFinishCallback,
+  OnIterationStartCallback,
+  OnIterationEndCallback,
 } from './ralph-loop-agent-settings';
 
-// Evaluator types
+// Verification types
 export type {
-  RalphEvaluator,
-  RalphEvaluatorContext,
-  RalphEvaluatorResult,
-  SelfJudgeEvaluator,
-  JudgeModelEvaluator,
-  CallbackEvaluator,
+  VerifyCompletionFunction,
+  VerifyCompletionContext,
+  VerifyCompletionResult,
 } from './ralph-loop-agent-evaluator';
-
-export { DEFAULT_EVALUATION_PROMPT } from './ralph-loop-agent-evaluator';

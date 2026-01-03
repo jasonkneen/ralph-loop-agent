@@ -6,14 +6,11 @@ import {
   type StreamTextResult,
   type ToolSet,
   type LanguageModel,
+  type StopCondition,
 } from 'ai';
 import type { ModelMessage } from '@ai-sdk/provider-utils';
 import type { RalphLoopAgentSettings } from './ralph-loop-agent-settings';
-import {
-  DEFAULT_EVALUATION_PROMPT,
-  type RalphEvaluatorContext,
-  type RalphEvaluatorResult,
-} from './ralph-loop-agent-evaluator';
+import type { VerifyCompletionResult } from './ralph-loop-agent-evaluator';
 
 /**
  * Parameters for calling a RalphLoopAgent.
@@ -35,19 +32,29 @@ export type RalphLoopAgentCallParameters = {
  */
 export interface RalphLoopAgentResult<TOOLS extends ToolSet = {}> {
   /**
-   * The final result from the last iteration.
+   * The final text output.
+   */
+  readonly text: string;
+
+  /**
+   * The number of iterations that were executed.
+   */
+  readonly iterations: number;
+
+  /**
+   * Why the loop stopped.
+   */
+  readonly completionReason: 'verified' | 'max-iterations' | 'aborted';
+
+  /**
+   * The reason message from verifyCompletion (if provided).
+   */
+  readonly reason?: string;
+
+  /**
+   * The full result from the last iteration.
    */
   readonly result: GenerateTextResult<TOOLS, never>;
-
-  /**
-   * The total number of iterations that were executed.
-   */
-  readonly totalIterations: number;
-
-  /**
-   * Whether the task was completed successfully or stopped due to max iterations.
-   */
-  readonly completedSuccessfully: boolean;
 
   /**
    * All results from each iteration.
@@ -56,17 +63,43 @@ export interface RalphLoopAgentResult<TOOLS extends ToolSet = {}> {
 }
 
 /**
+ * Stop condition for iteration count.
+ */
+export type IterationStopCondition = {
+  type: 'iteration-count';
+  count: number;
+};
+
+/**
+ * Creates a stop condition that stops after N iterations.
+ */
+export function iterationCountIs(count: number): IterationStopCondition {
+  return { type: 'iteration-count', count };
+}
+
+/**
  * A Ralph Loop Agent implements the "Ralph Wiggum" technique - an iterative
  * approach that continuously runs until a task is completed.
  *
  * The agent has two nested loops:
- * 1. **Outer loop (Ralph loop)**: Runs iterations until the task is evaluated as complete
+ * 1. **Outer loop (Ralph loop)**: Runs iterations until verifyCompletion returns true
  * 2. **Inner loop (Tool loop)**: Executes tools and LLM calls within each iteration
  *
- * The agent supports three evaluation strategies:
- * - **self-judge**: Uses the same model to evaluate completion
- * - **judge-model**: Uses a separate model to evaluate completion
- * - **callback**: Uses a custom function to evaluate completion
+ * @example
+ * ```typescript
+ * const agent = new RalphLoopAgent({
+ *   model: 'anthropic/claude-opus-4.5',
+ *   instructions: 'You are a helpful assistant.',
+ *   tools: { readFile, writeFile },
+ *   stopWhen: iterationCountIs(10),
+ *   verifyCompletion: async ({ result }) => ({
+ *     complete: result.text.includes('DONE'),
+ *     reason: 'Task completed',
+ *   }),
+ * });
+ *
+ * const result = await agent.loop({ prompt: 'Do the task' });
+ * ```
  */
 export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
   readonly version = 'ralph-agent-v1';
@@ -92,24 +125,30 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
   }
 
   /**
-   * The maximum number of Ralph iterations.
+   * The maximum number of iterations.
    */
   get maxIterations(): number {
-    return this.settings.maxIterations ?? 10;
+    const stopWhen = this.settings.stopWhen;
+    if (stopWhen && 'type' in stopWhen && stopWhen.type === 'iteration-count') {
+      return stopWhen.count;
+    }
+    return 10; // default
   }
 
   /**
-   * Generates output from the agent using the Ralph loop technique.
-   * Runs iteratively until the task is complete or max iterations reached.
+   * Runs the agent loop until completion or max iterations.
    */
-  async generate({
+  async loop({
     prompt,
     abortSignal,
   }: RalphLoopAgentCallParameters): Promise<RalphLoopAgentResult<TOOLS>> {
     const allResults: Array<GenerateTextResult<TOOLS, never>> = [];
     let currentMessages: Array<ModelMessage> = [];
     let iteration = 0;
-    let completedSuccessfully = false;
+    let completionReason: RalphLoopAgentResult<TOOLS>['completionReason'] = 'max-iterations';
+    let reason: string | undefined;
+
+    const maxIterations = this.maxIterations;
 
     // Build the initial user message
     const initialUserMessage: ModelMessage = {
@@ -120,8 +159,18 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
     // Add instructions as system message if provided
     const systemMessages = this.buildSystemMessages();
 
-    while (iteration < this.maxIterations) {
+    while (iteration < maxIterations) {
+      // Check for abort
+      if (abortSignal?.aborted) {
+        completionReason = 'aborted';
+        break;
+      }
+
       iteration++;
+      const startTime = Date.now();
+
+      // Call onIterationStart
+      await this.settings.onIterationStart?.({ iteration });
 
       // Build messages for this iteration
       const messages: Array<ModelMessage> = [
@@ -149,7 +198,7 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
         messages,
         tools: this.settings.tools,
         toolChoice: this.settings.toolChoice,
-        stopWhen: this.settings.stopWhen ?? stepCountIs(20),
+        stopWhen: this.settings.toolStopWhen ?? stepCountIs(20),
         maxOutputTokens: this.settings.maxOutputTokens,
         temperature: this.settings.temperature,
         topP: this.settings.topP,
@@ -172,70 +221,70 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
       // Add the response messages to conversation history
       currentMessages = [...currentMessages, ...result.response.messages];
 
-      // Evaluate if the task is complete
-      const evaluatorContext: RalphEvaluatorContext<TOOLS> = {
-        originalPrompt: prompt,
-        result,
-        iteration,
-        previousResults: allResults.slice(0, -1),
-      };
+      const duration = Date.now() - startTime;
 
-      const evaluatorResult = await this.evaluate(evaluatorContext);
-
-      // Call onIterationFinish callback
-      await this.settings.onIterationFinish?.({
+      // Call onIterationEnd
+      await this.settings.onIterationEnd?.({
         iteration,
+        duration,
         result,
-        isComplete: evaluatorResult.isComplete,
-        feedback: evaluatorResult.feedback,
-        reason: evaluatorResult.reason,
       });
 
-      if (evaluatorResult.isComplete) {
-        completedSuccessfully = true;
-        break;
-      }
-
-      // If not complete and there's feedback, add it to the conversation
-      if (evaluatorResult.feedback) {
-        currentMessages.push({
-          role: 'user',
-          content: [{ type: 'text', text: evaluatorResult.feedback }],
+      // Verify completion
+      if (this.settings.verifyCompletion) {
+        const verification = await this.settings.verifyCompletion({
+          result,
+          iteration,
+          allResults,
+          originalPrompt: prompt,
         });
+
+        if (verification.complete) {
+          completionReason = 'verified';
+          reason = verification.reason;
+          break;
+        }
+
+        // If verification provides feedback, add it
+        if (verification.reason && !verification.complete) {
+          currentMessages.push({
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Feedback: ${verification.reason}`,
+              },
+            ],
+          });
+        }
       }
     }
 
     const finalResult = allResults[allResults.length - 1]!;
 
-    // Call onFinish callback
-    await this.settings.onFinish?.({
-      totalIterations: iteration,
-      result: finalResult,
-      completedSuccessfully,
-      allResults,
-    });
-
     return {
+      text: finalResult.text,
+      iterations: iteration,
+      completionReason,
+      reason,
       result: finalResult,
-      totalIterations: iteration,
-      completedSuccessfully,
       allResults,
     };
   }
 
   /**
-   * Streams output from the agent. Note: This only streams the final iteration.
-   * For full streaming support across iterations, use generate() with callbacks.
+   * Streams the agent loop. Streams only the final iteration.
+   * For full control, use loop() with callbacks instead.
    */
   async stream({
     prompt,
     abortSignal,
   }: RalphLoopAgentCallParameters): Promise<StreamTextResult<TOOLS, never>> {
-    // For streaming, we run non-streaming iterations until the last one
-    // then stream the final iteration
     const allResults: Array<GenerateTextResult<TOOLS, never>> = [];
     let currentMessages: Array<ModelMessage> = [];
     let iteration = 0;
+
+    const maxIterations = this.maxIterations;
 
     const initialUserMessage: ModelMessage = {
       role: 'user',
@@ -244,9 +293,16 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
 
     const systemMessages = this.buildSystemMessages();
 
-    // Run iterations until we're at the last one or complete
-    while (iteration < this.maxIterations - 1) {
+    // Run non-streaming iterations until completion or second-to-last
+    while (iteration < maxIterations - 1) {
+      if (abortSignal?.aborted) {
+        break;
+      }
+
       iteration++;
+      const startTime = Date.now();
+
+      await this.settings.onIterationStart?.({ iteration });
 
       const messages: Array<ModelMessage> = [
         ...systemMessages,
@@ -271,7 +327,7 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
         messages,
         tools: this.settings.tools,
         toolChoice: this.settings.toolChoice,
-        stopWhen: this.settings.stopWhen ?? stepCountIs(20),
+        stopWhen: this.settings.toolStopWhen ?? stepCountIs(20),
         maxOutputTokens: this.settings.maxOutputTokens,
         temperature: this.settings.temperature,
         topP: this.settings.topP,
@@ -290,45 +346,39 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
       })) as GenerateTextResult<TOOLS, never>;
 
       allResults.push(result);
-
       currentMessages = [...currentMessages, ...result.response.messages];
 
-      const evaluatorContext: RalphEvaluatorContext<TOOLS> = {
-        originalPrompt: prompt,
-        result,
-        iteration,
-        previousResults: allResults.slice(0, -1),
-      };
+      const duration = Date.now() - startTime;
+      await this.settings.onIterationEnd?.({ iteration, duration, result });
 
-      const evaluatorResult = await this.evaluate(evaluatorContext);
-
-      await this.settings.onIterationFinish?.({
-        iteration,
-        result,
-        isComplete: evaluatorResult.isComplete,
-        feedback: evaluatorResult.feedback,
-        reason: evaluatorResult.reason,
-      });
-
-      if (evaluatorResult.isComplete) {
-        // Task is complete before final iteration - return a stream that yields the final result
-        return streamText({
-          model: this.settings.model,
-          messages: [...systemMessages, initialUserMessage, ...currentMessages],
-          tools: this.settings.tools,
-          toolChoice: this.settings.toolChoice,
-          stopWhen: this.settings.stopWhen ?? stepCountIs(20),
-          maxOutputTokens: this.settings.maxOutputTokens,
-          temperature: this.settings.temperature,
-          abortSignal,
-        }) as StreamTextResult<TOOLS, never>;
-      }
-
-      if (evaluatorResult.feedback) {
-        currentMessages.push({
-          role: 'user',
-          content: [{ type: 'text', text: evaluatorResult.feedback }],
+      if (this.settings.verifyCompletion) {
+        const verification = await this.settings.verifyCompletion({
+          result,
+          iteration,
+          allResults,
+          originalPrompt: prompt,
         });
+
+        if (verification.complete) {
+          // Complete early - return a stream for the final message
+          return streamText({
+            model: this.settings.model,
+            messages: [...systemMessages, initialUserMessage, ...currentMessages],
+            tools: this.settings.tools,
+            toolChoice: this.settings.toolChoice,
+            stopWhen: this.settings.toolStopWhen ?? stepCountIs(20),
+            maxOutputTokens: this.settings.maxOutputTokens,
+            temperature: this.settings.temperature,
+            abortSignal,
+          }) as StreamTextResult<TOOLS, never>;
+        }
+
+        if (verification.reason) {
+          currentMessages.push({
+            role: 'user',
+            content: [{ type: 'text', text: `Feedback: ${verification.reason}` }],
+          });
+        }
       }
     }
 
@@ -357,7 +407,7 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
       messages: finalMessages,
       tools: this.settings.tools,
       toolChoice: this.settings.toolChoice,
-      stopWhen: this.settings.stopWhen ?? stepCountIs(20),
+      stopWhen: this.settings.toolStopWhen ?? stepCountIs(20),
       maxOutputTokens: this.settings.maxOutputTokens,
       temperature: this.settings.temperature,
       topP: this.settings.topP,
@@ -395,151 +445,5 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
     }
 
     return [instructions];
-  }
-
-  /**
-   * Evaluate if the task is complete using the configured evaluator.
-   */
-  private async evaluate(
-    context: RalphEvaluatorContext<TOOLS>,
-  ): Promise<RalphEvaluatorResult> {
-    const { evaluator } = this.settings;
-
-    switch (evaluator.type) {
-      case 'self-judge':
-        return this.evaluateWithSelfJudge(context, evaluator.prompt);
-
-      case 'judge-model':
-        return this.evaluateWithJudgeModel(
-          context,
-          evaluator.model,
-          evaluator.prompt,
-        );
-
-      case 'callback':
-        return this.evaluateWithCallback(context, evaluator.fn);
-
-      default:
-        // TypeScript exhaustiveness check
-        const _exhaustive: never = evaluator;
-        throw new Error(`Unknown evaluator type: ${_exhaustive}`);
-    }
-  }
-
-  /**
-   * Evaluate using the same model (self-judge).
-   */
-  private async evaluateWithSelfJudge(
-    context: RalphEvaluatorContext<TOOLS>,
-    customPrompt?: string,
-  ): Promise<RalphEvaluatorResult> {
-    const evaluationPrompt = customPrompt ?? DEFAULT_EVALUATION_PROMPT;
-
-    // Build conversation history for evaluation
-    const systemMessages = this.buildSystemMessages();
-    const messages: Array<ModelMessage> = [
-      ...systemMessages,
-      {
-        role: 'user',
-        content: [{ type: 'text', text: context.originalPrompt }],
-      },
-      ...context.result.response.messages,
-      {
-        role: 'user',
-        content: [{ type: 'text', text: evaluationPrompt }],
-      },
-    ];
-
-    const evalResult = await generateText({
-      model: this.settings.model,
-      messages,
-      maxOutputTokens: 500,
-    });
-
-    return this.parseEvaluationResponse(evalResult.text);
-  }
-
-  /**
-   * Evaluate using a separate judge model.
-   */
-  private async evaluateWithJudgeModel(
-    context: RalphEvaluatorContext<TOOLS>,
-    judgeModel: LanguageModel,
-    customPrompt?: string,
-  ): Promise<RalphEvaluatorResult> {
-    const evaluationPrompt = customPrompt ?? DEFAULT_EVALUATION_PROMPT;
-
-    // Build a summary of the conversation for the judge
-    const conversationSummary = `
-Original Task: ${context.originalPrompt}
-
-Agent's Response (Iteration ${context.iteration}):
-${context.result.text}
-
-${evaluationPrompt}
-`.trim();
-
-    const evalResult = await generateText({
-      model: judgeModel,
-      prompt: conversationSummary,
-      maxOutputTokens: 500,
-    });
-
-    return this.parseEvaluationResponse(evalResult.text);
-  }
-
-  /**
-   * Evaluate using a custom callback function.
-   */
-  private async evaluateWithCallback(
-    context: RalphEvaluatorContext<TOOLS>,
-    fn: (
-      ctx: RalphEvaluatorContext<TOOLS>,
-    ) => boolean | RalphEvaluatorResult | Promise<boolean | RalphEvaluatorResult>,
-  ): Promise<RalphEvaluatorResult> {
-    const result = await fn(context);
-
-    if (typeof result === 'boolean') {
-      return { isComplete: result };
-    }
-
-    return result;
-  }
-
-  /**
-   * Parse the evaluation response from the model.
-   */
-  private parseEvaluationResponse(response: string): RalphEvaluatorResult {
-    const normalizedResponse = response.trim().toUpperCase();
-
-    // Check for YES at the start
-    if (
-      normalizedResponse.startsWith('YES') ||
-      normalizedResponse.includes('TASK IS COMPLETE') ||
-      normalizedResponse.includes('TASK HAS BEEN COMPLETED')
-    ) {
-      return {
-        isComplete: true,
-        reason: response,
-      };
-    }
-
-    // Check for NO at the start
-    if (normalizedResponse.startsWith('NO')) {
-      // Extract feedback (everything after NO)
-      const feedback = response.replace(/^no[,:\s]*/i, '').trim();
-
-      return {
-        isComplete: false,
-        feedback: feedback || undefined,
-        reason: response,
-      };
-    }
-
-    // Default to not complete if unclear
-    return {
-      isComplete: false,
-      reason: `Unclear response: ${response}`,
-    };
   }
 }

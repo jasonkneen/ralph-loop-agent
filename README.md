@@ -2,7 +2,7 @@
 
 > **⚠️ EXPERIMENTAL - USE AT YOUR OWN RISK**
 >
-> This package is highly experimental. The iterative nature of the Ralph Wiggum technique can result in **high token usage and significant costs**. Each iteration consumes tokens, and the agent may run multiple iterations before completing a task. Monitor your usage carefully and set appropriate `maxIterations` limits.
+> This package is highly experimental. The iterative nature of the Ralph Wiggum technique can result in **high token usage and significant costs**. Each iteration consumes tokens, and the agent may run multiple iterations before completing a task. Monitor your usage carefully and set appropriate `stopWhen` limits.
 
 An iterative AI agent that implements the "Ralph Wiggum" technique - continuously running until a task is completed.
 
@@ -23,7 +23,7 @@ Named after the lovably persistent character from *The Simpsons*, the Ralph Wigg
 │  │  (LLM ↔ tools until no more)    │            │
 │  └─────────────────────────────────┘            │
 │              ↓                                  │
-│  Evaluate: "Is the TASK complete?"              │
+│  verifyCompletion: "Is the TASK complete?"      │
 │              ↓                                  │
 │       No? → Run another iteration               │
 │       Yes? → Return final result                │
@@ -32,87 +32,79 @@ Named after the lovably persistent character from *The Simpsons*, the Ralph Wigg
 
 ## Usage
 
-### Basic Example (Self-Judging)
+### Basic Example
 
 ```typescript
-import { RalphLoopAgent } from 'ralph-wiggum';
+import { RalphLoopAgent, iterationCountIs } from 'ralph-wiggum';
 
 const agent = new RalphLoopAgent({
   model: 'anthropic/claude-opus-4.5',
   instructions: 'You are a helpful coding assistant.',
-  evaluator: {
-    type: 'self-judge',
-    prompt: 'Has the task been fully completed? Answer YES or NO.',
-  },
-  maxIterations: 5,
+  stopWhen: iterationCountIs(10),
+  verifyCompletion: async ({ result }) => ({
+    complete: result.text.includes('DONE'),
+    reason: 'Task completed successfully',
+  }),
 });
 
-const { result, completedSuccessfully, totalIterations } = await agent.generate({
+const { text, iterations, completionReason } = await agent.loop({
   prompt: 'Create a function that calculates fibonacci numbers',
 });
 
-console.log(`Completed: ${completedSuccessfully}`);
-console.log(`Iterations: ${totalIterations}`);
+console.log(text);
+console.log(`Completed in ${iterations} iterations`);
+console.log(`Reason: ${completionReason}`);
+```
+
+### Migration Example
+
+```typescript
+import { RalphLoopAgent, iterationCountIs } from 'ralph-wiggum';
+
+const migrationAgent = new RalphLoopAgent({
+  model: 'anthropic/claude-opus-4.5',
+  instructions: `You are migrating a codebase from Jest to Vitest.
+    
+    Completion criteria:
+    - All test files use vitest imports
+    - vitest.config.ts exists
+    - All tests pass when running 'pnpm test'`,
+  
+  tools: { readFile, writeFile, execute },
+  
+  stopWhen: iterationCountIs(50),
+  
+  verifyCompletion: async () => {
+    const checks = await Promise.all([
+      fileExists('vitest.config.ts'),
+      !await fileExists('jest.config.js'),
+      noFilesMatch('**/*.test.ts', /from ['"]@jest/),
+      fileContains('package.json', '"vitest"'),
+    ]);
+    
+    return { 
+      complete: checks.every(Boolean),
+      reason: checks.every(Boolean) ? 'Migration complete' : 'Structural checks failed'
+    };
+  },
+
+  onIterationStart: ({ iteration }) => console.log(`Starting iteration ${iteration}`),
+  onIterationEnd: ({ iteration, duration }) => console.log(`Iteration ${iteration} completed in ${duration}ms`),
+});
+
+const result = await migrationAgent.loop({
+  prompt: 'Migrate all Jest tests to Vitest.',
+});
+
 console.log(result.text);
-```
-
-### With a Separate Judge Model
-
-Use a cheaper/faster model to evaluate completion:
-
-```typescript
-import { RalphLoopAgent } from 'ralph-wiggum';
-
-const agent = new RalphLoopAgent({
-  model: 'anthropic/claude-opus-4.5',
-  instructions: 'You are a coding assistant.',
-  evaluator: {
-    type: 'judge-model',
-    model: 'anthropic/claude-sonnet-4-20250514', // Cheaper model for evaluation
-    prompt: 'Is the coding task complete? YES or NO.',
-  },
-});
-
-const result = await agent.generate({
-  prompt: 'Build a todo list with add/remove/toggle functionality',
-});
-```
-
-### With Custom Callback Evaluation
-
-Full control over completion logic:
-
-```typescript
-import { RalphLoopAgent } from 'ralph-wiggum';
-
-const agent = new RalphLoopAgent({
-  model: 'anthropic/claude-opus-4.5',
-  instructions: 'You are a coding assistant.',
-  evaluator: {
-    type: 'callback',
-    fn: async (context) => {
-      // Custom logic - check files, run tests, etc.
-      if (context.result.text.includes('DONE')) {
-        return { isComplete: true, reason: 'Agent signaled completion' };
-      }
-
-      if (context.iteration >= 3) {
-        return {
-          isComplete: false,
-          feedback: 'Please wrap up and finalize your solution.',
-        };
-      }
-
-      return { isComplete: false };
-    },
-  },
-});
+console.log(result.iterations);
+console.log(result.completionReason);
 ```
 
 ### With Tools
 
 ```typescript
-import { RalphLoopAgent } from 'ralph-wiggum';
+import { RalphLoopAgent, iterationCountIs } from 'ralph-wiggum';
 import { tool } from 'ai';
 import { z } from 'zod';
 
@@ -123,22 +115,18 @@ const agent = new RalphLoopAgent({
     readFile: tool({
       description: 'Read a file from disk',
       parameters: z.object({ path: z.string() }),
-      execute: async ({ path }) => {
-        // Your implementation
-        return { content: '...' };
-      },
+      execute: async ({ path }) => ({ content: '...' }),
     }),
     writeFile: tool({
       description: 'Write content to a file',
       parameters: z.object({ path: z.string(), content: z.string() }),
-      execute: async ({ path, content }) => {
-        // Your implementation
-        return { success: true };
-      },
+      execute: async ({ path, content }) => ({ success: true }),
     }),
   },
-  evaluator: { type: 'self-judge' },
-  maxIterations: 10,
+  stopWhen: iterationCountIs(10),
+  verifyCompletion: ({ result }) => ({
+    complete: result.text.includes('All files updated'),
+  }),
 });
 ```
 
@@ -154,26 +142,7 @@ for await (const chunk of stream.textStream) {
 }
 ```
 
-Note: Streaming runs non-streaming iterations until evaluation passes or the final iteration, then streams that last iteration.
-
-### Callbacks
-
-Monitor progress with callbacks:
-
-```typescript
-const agent = new RalphLoopAgent({
-  model: 'anthropic/claude-opus-4.5',
-  evaluator: { type: 'self-judge' },
-  onIterationFinish: ({ iteration, isComplete, feedback, reason }) => {
-    console.log(`Iteration ${iteration}: ${isComplete ? 'COMPLETE' : 'CONTINUING'}`);
-    if (feedback) console.log(`Feedback: ${feedback}`);
-  },
-  onFinish: ({ totalIterations, completedSuccessfully }) => {
-    console.log(`Finished in ${totalIterations} iterations`);
-    console.log(`Success: ${completedSuccessfully}`);
-  },
-});
-```
+Note: Streaming runs non-streaming iterations until verification passes or the final iteration, then streams that last iteration.
 
 ## API Reference
 
@@ -183,41 +152,55 @@ const agent = new RalphLoopAgent({
 
 | Option | Type | Required | Default | Description |
 |--------|------|----------|---------|-------------|
-| `model` | `LanguageModel` | ✅ | - | The AI model to use (AI Gateway string format) |
-| `evaluator` | `RalphEvaluator` | ✅ | - | How to evaluate task completion |
+| `model` | `LanguageModel` | ✅ | - | The AI model (AI Gateway string format) |
 | `instructions` | `string` | ❌ | - | System prompt for the agent |
 | `tools` | `ToolSet` | ❌ | - | Tools the agent can use |
-| `maxIterations` | `number` | ❌ | `10` | Maximum outer loop iterations |
-| `stopWhen` | `StopCondition` | ❌ | `stepCountIs(20)` | Inner tool loop stop condition |
-| `onIterationFinish` | `function` | ❌ | - | Called after each iteration |
-| `onFinish` | `function` | ❌ | - | Called when all iterations complete |
+| `stopWhen` | `IterationStopCondition` | ❌ | `iterationCountIs(10)` | When to stop the outer loop |
+| `toolStopWhen` | `StopCondition` | ❌ | `stepCountIs(20)` | When to stop the inner tool loop |
+| `verifyCompletion` | `function` | ❌ | - | Function to verify task completion |
+| `onIterationStart` | `function` | ❌ | - | Called at start of each iteration |
+| `onIterationEnd` | `function` | ❌ | - | Called at end of each iteration |
 
-#### Evaluator Types
+#### `iterationCountIs(n)`
 
-**Self-Judge** - Same model evaluates completion:
+Creates a stop condition that stops after `n` iterations.
+
 ```typescript
-{ type: 'self-judge', prompt?: string }
+import { iterationCountIs } from 'ralph-wiggum';
+
+stopWhen: iterationCountIs(50)
 ```
 
-**Judge Model** - Separate model evaluates completion:
-```typescript
-{ type: 'judge-model', model: LanguageModel, prompt?: string }
-```
+#### `verifyCompletion`
 
-**Callback** - Custom function evaluates completion:
+Function to verify if the task is complete:
+
 ```typescript
-{ type: 'callback', fn: (context) => boolean | RalphEvaluatorResult }
+verifyCompletion: async ({ result, iteration, allResults, originalPrompt }) => ({
+  complete: boolean,
+  reason?: string, // Feedback if not complete, or explanation if complete
+})
 ```
 
 #### Methods
 
-**`generate(options)`** - Non-streaming generation
+**`loop(options)`** - Runs the agent loop until completion
 - Returns: `RalphLoopAgentResult`
 
-**`stream(options)`** - Streaming generation
+```typescript
+interface RalphLoopAgentResult {
+  text: string;                              // Final output text
+  iterations: number;                        // Number of iterations run
+  completionReason: 'verified' | 'max-iterations' | 'aborted';
+  reason?: string;                           // Reason from verifyCompletion
+  result: GenerateTextResult;               // Full result from last iteration
+  allResults: GenerateTextResult[];         // All iteration results
+}
+```
+
+**`stream(options)`** - Streams the final iteration
 - Returns: `StreamTextResult`
 
 ## License
 
 Apache-2.0
-

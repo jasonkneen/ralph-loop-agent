@@ -4,14 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx index.ts"
+    "start": "tsx index.ts",
+    "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
     "ralph-wiggum": "workspace:*",
     "ai": "^6.0.0",
     "zod": "^4.0.0",
     "glob": "^11.0.2",
-    "prompts": "^2.4.2"
+    "prompts": "^2.4.2",
+    "playwright": "^1.57.0"
   },
   "devDependencies": {
     "tsx": "^4.19.4",

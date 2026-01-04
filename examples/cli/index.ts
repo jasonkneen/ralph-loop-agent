@@ -31,8 +31,37 @@ import { glob } from 'glob';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import prompts from 'prompts';
+import { chromium, Browser, Page } from 'playwright';
 
 const execAsync = promisify(exec);
+
+// Browser management
+let browser: Browser | null = null;
+let browserPage: Page | null = null;
+
+async function getBrowserPage(): Promise<Page> {
+  if (!browser) {
+    browser = await chromium.launch({ headless: true });
+  }
+  if (!browserPage || browserPage.isClosed()) {
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    browserPage = await context.newPage();
+  }
+  return browserPage;
+}
+
+async function closeBrowser() {
+  if (browserPage) {
+    await browserPage.close().catch(() => {});
+    browserPage = null;
+  }
+  if (browser) {
+    await browser.close().catch(() => {});
+    browser = null;
+  }
+}
 
 // Constants for context management
 const MAX_FILE_CHARS = 30_000;
@@ -716,6 +745,210 @@ const tools = {
       return { complete: true, summary, filesModified };
     },
   }),
+
+  // Browser tools for testing and verification
+  browserNavigate: tool({
+    description: 'Navigate the browser to a URL',
+    inputSchema: z.object({
+      url: z.string().describe('URL to navigate to'),
+    }),
+    execute: async ({ url }) => {
+      try {
+        const page = await getBrowserPage();
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        log(`  🌐 Navigated to: ${url}`, 'blue');
+        return { success: true, url: page.url(), title: await page.title() };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserSnapshot: tool({
+    description: 'Get a text representation of the current page structure - useful for understanding page content and layout',
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const page = await getBrowserPage();
+        // Get a simplified view of the page content
+        const snapshot = await page.evaluate(() => {
+          const extractStructure = (el: Element, depth = 0): string => {
+            if (depth > 4) return '';
+            const tag = el.tagName.toLowerCase();
+            const text = el.textContent?.trim().slice(0, 50) || '';
+            const role = el.getAttribute('role') || '';
+            const href = el.getAttribute('href') || '';
+            const lines: string[] = [];
+            
+            if (['script', 'style', 'noscript'].includes(tag)) return '';
+            
+            const indent = '  '.repeat(depth);
+            let info = `${indent}<${tag}`;
+            if (role) info += ` role="${role}"`;
+            if (href) info += ` href="${href}"`;
+            if (text && !el.children.length) info += `>${text}</${tag}>`;
+            else info += '>';
+            lines.push(info);
+            
+            for (const child of el.children) {
+              const childStr = extractStructure(child, depth + 1);
+              if (childStr) lines.push(childStr);
+            }
+            return lines.join('\n');
+          };
+          return extractStructure(document.body);
+        });
+        log(`  📷 Got page snapshot`, 'dim');
+        return { success: true, snapshot: snapshot.slice(0, 15000) };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserClick: tool({
+    description: 'Click an element on the page',
+    inputSchema: z.object({
+      selector: z.string().describe('CSS selector or text content to click'),
+    }),
+    execute: async ({ selector }) => {
+      try {
+        const page = await getBrowserPage();
+        // Try CSS selector first, then text
+        try {
+          await page.click(selector, { timeout: 5000 });
+        } catch {
+          await page.getByText(selector).click({ timeout: 5000 });
+        }
+        log(`  🖱️  Clicked: ${selector}`, 'dim');
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserType: tool({
+    description: 'Type text into an input element',
+    inputSchema: z.object({
+      selector: z.string().describe('CSS selector for the input'),
+      text: z.string().describe('Text to type'),
+      submit: z.boolean().optional().describe('Press Enter after typing'),
+    }),
+    execute: async ({ selector, text, submit }) => {
+      try {
+        const page = await getBrowserPage();
+        await page.fill(selector, text);
+        if (submit) {
+          await page.press(selector, 'Enter');
+        }
+        log(`  ⌨️  Typed into: ${selector}`, 'dim');
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserScreenshot: tool({
+    description: 'Take a screenshot of the current page and save it to a file',
+    inputSchema: z.object({
+      filename: z.string().describe('Filename for the screenshot (e.g., "screenshot.png")'),
+      fullPage: z.boolean().optional().describe('Capture full scrollable page'),
+    }),
+    execute: async ({ filename, fullPage }) => {
+      try {
+        const page = await getBrowserPage();
+        const screenshotPath = path.join(resolvedDir, filename);
+        await page.screenshot({ path: screenshotPath, fullPage: fullPage ?? false });
+        log(`  📸 Screenshot saved: ${filename}`, 'green');
+        return { success: true, path: screenshotPath };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserGetContent: tool({
+    description: 'Get the text content of the page or a specific element',
+    inputSchema: z.object({
+      selector: z.string().optional().describe('CSS selector (omit for full page)'),
+    }),
+    execute: async ({ selector }) => {
+      try {
+        const page = await getBrowserPage();
+        let content: string;
+        if (selector) {
+          content = await page.locator(selector).textContent() || '';
+        } else {
+          content = await page.evaluate(() => document.body.innerText);
+        }
+        log(`  📄 Got page content${selector ? ` for ${selector}` : ''}`, 'dim');
+        return { success: true, content: content.slice(0, 10000) };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserWait: tool({
+    description: 'Wait for a condition on the page',
+    inputSchema: z.object({
+      selector: z.string().optional().describe('Wait for this selector to appear'),
+      text: z.string().optional().describe('Wait for this text to appear'),
+      timeout: z.number().optional().describe('Max wait time in ms (default 5000)'),
+    }),
+    execute: async ({ selector, text, timeout }) => {
+      try {
+        const page = await getBrowserPage();
+        const waitTimeout = timeout ?? 5000;
+        if (selector) {
+          await page.waitForSelector(selector, { timeout: waitTimeout });
+          log(`  ⏳ Waited for selector: ${selector}`, 'dim');
+        } else if (text) {
+          await page.waitForFunction(
+            (t: string) => document.body.innerText.includes(t),
+            text,
+            { timeout: waitTimeout }
+          );
+          log(`  ⏳ Waited for text: ${text}`, 'dim');
+        }
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserConsole: tool({
+    description: 'Get console messages from the browser',
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const page = await getBrowserPage();
+        const messages: { type: string; text: string }[] = [];
+        // Listen for new messages briefly
+        page.on('console', (msg: { type: () => string; text: () => string }) => {
+          messages.push({ type: msg.type(), text: msg.text() });
+        });
+        await new Promise(resolve => setTimeout(resolve, 100));
+        log(`  📋 Got ${messages.length} console messages`, 'dim');
+        return { success: true, messages: messages.slice(0, 50) };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserClose: tool({
+    description: 'Close the browser',
+    inputSchema: z.object({}),
+    execute: async () => {
+      await closeBrowser();
+      log(`  🔒 Browser closed`, 'dim');
+      return { success: true };
+    },
+  }),
 };
 
 type Tools = typeof tools;
@@ -820,6 +1053,147 @@ const judgeTools = {
     }),
     execute: async ({ issues, suggestions }) => {
       return { approved: false, issues, suggestions };
+    },
+  }),
+
+  // Browser tools for testing verification
+  browserNavigate: tool({
+    description: 'Navigate the browser to a URL to test the application',
+    inputSchema: z.object({
+      url: z.string().describe('URL to navigate to'),
+    }),
+    execute: async ({ url }) => {
+      try {
+        const page = await getBrowserPage();
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        return { success: true, url: page.url(), title: await page.title() };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserSnapshot: tool({
+    description: 'Get a text representation of the current page structure',
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const page = await getBrowserPage();
+        const snapshot = await page.evaluate(() => {
+          const extractStructure = (el: Element, depth = 0): string => {
+            if (depth > 4) return '';
+            const tag = el.tagName.toLowerCase();
+            const text = el.textContent?.trim().slice(0, 50) || '';
+            const role = el.getAttribute('role') || '';
+            const lines: string[] = [];
+            
+            if (['script', 'style', 'noscript'].includes(tag)) return '';
+            
+            const indent = '  '.repeat(depth);
+            let info = `${indent}<${tag}`;
+            if (role) info += ` role="${role}"`;
+            if (text && !el.children.length) info += `>${text}</${tag}>`;
+            else info += '>';
+            lines.push(info);
+            
+            for (const child of el.children) {
+              const childStr = extractStructure(child, depth + 1);
+              if (childStr) lines.push(childStr);
+            }
+            return lines.join('\n');
+          };
+          return extractStructure(document.body);
+        });
+        return { success: true, snapshot: snapshot.slice(0, 15000) };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserClick: tool({
+    description: 'Click an element on the page',
+    inputSchema: z.object({
+      selector: z.string().describe('CSS selector or text content to click'),
+    }),
+    execute: async ({ selector }) => {
+      try {
+        const page = await getBrowserPage();
+        try {
+          await page.click(selector, { timeout: 5000 });
+        } catch {
+          await page.getByText(selector).click({ timeout: 5000 });
+        }
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserGetContent: tool({
+    description: 'Get the text content of the page or a specific element',
+    inputSchema: z.object({
+      selector: z.string().optional().describe('CSS selector (omit for full page)'),
+    }),
+    execute: async ({ selector }) => {
+      try {
+        const page = await getBrowserPage();
+        let content: string;
+        if (selector) {
+          content = await page.locator(selector).textContent() || '';
+        } else {
+          content = await page.evaluate(() => document.body.innerText);
+        }
+        return { success: true, content: content.slice(0, 10000) };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserScreenshot: tool({
+    description: 'Take a screenshot of the current page to verify UI',
+    inputSchema: z.object({
+      filename: z.string().describe('Filename for the screenshot'),
+      fullPage: z.boolean().optional().describe('Capture full scrollable page'),
+    }),
+    execute: async ({ filename, fullPage }) => {
+      try {
+        const page = await getBrowserPage();
+        const screenshotPath = path.join(resolvedDir, filename);
+        await page.screenshot({ path: screenshotPath, fullPage: fullPage ?? false });
+        return { success: true, path: screenshotPath };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  }),
+
+  browserWait: tool({
+    description: 'Wait for a condition on the page',
+    inputSchema: z.object({
+      selector: z.string().optional().describe('Wait for this selector'),
+      text: z.string().optional().describe('Wait for this text'),
+      timeout: z.number().optional().describe('Max wait time in ms'),
+    }),
+    execute: async ({ selector, text, timeout }) => {
+      try {
+        const page = await getBrowserPage();
+        const waitTimeout = timeout ?? 5000;
+        if (selector) {
+          await page.waitForSelector(selector, { timeout: waitTimeout });
+        } else if (text) {
+          await page.waitForFunction(
+            (t: string) => document.body.innerText.includes(t),
+            text,
+            { timeout: waitTimeout }
+          );
+        }
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
     },
   }),
 };
@@ -1112,7 +1486,10 @@ Current working directory: ${resolvedDir}`,
   } catch (error) {
     logSection('Error');
     console.error(error);
+    await closeBrowser();
     process.exit(1);
+  } finally {
+    await closeBrowser();
   }
 }
 

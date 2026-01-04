@@ -1331,6 +1331,16 @@ async function main() {
   const { prompt: taskPrompt, source: promptSource } = await getTaskPrompt();
 
   log(`Prompt source: ${promptSource}`, 'dim');
+
+  // Load AGENTS.md if it exists in the target directory
+  let agentsMd = '';
+  const agentsMdPath = path.join(resolvedDir, 'AGENTS.md');
+  try {
+    agentsMd = await fs.readFile(agentsMdPath, 'utf-8');
+    log(`Found AGENTS.md`, 'dim');
+  } catch {
+    // No AGENTS.md, that's fine
+  }
   
   logSection('Task');
   // Show first 500 chars of prompt, or full if shorter
@@ -1353,9 +1363,8 @@ async function main() {
     process.exit(0);
   }
 
-  const agent = new RalphLoopAgent({
-    model: 'anthropic/claude-opus-4.5' as any,
-    instructions: `You are an expert software engineer. Your task is to complete coding tasks autonomously.
+  // Build instructions with optional AGENTS.md
+  const baseInstructions = `You are an expert software engineer. Your task is to complete coding tasks autonomously.
 
 ## Guidelines:
 1. First, explore the codebase to understand its structure (list files, read key files like package.json, README, etc.)
@@ -1378,7 +1387,15 @@ Then use that exact version. NEVER guess or use outdated versions.
 - Run tests frequently to catch issues early
 - Be thorough but efficient
 
-Current working directory: ${resolvedDir}`,
+Current working directory: ${resolvedDir}`;
+
+  const instructions = agentsMd 
+    ? `${baseInstructions}\n\n## Project-Specific Instructions (from AGENTS.md)\n\n${agentsMd}`
+    : baseInstructions;
+
+  const agent = new RalphLoopAgent({
+    model: 'anthropic/claude-opus-4.5' as any,
+    instructions,
 
     tools,
 

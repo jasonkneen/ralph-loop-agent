@@ -292,7 +292,7 @@ async function showInterruptMenu(): Promise<'continue' | 'followup' | 'save' | '
   log('  ╔═══════════════════════════════════════╗', 'yellow');
   log('  ║          INTERRUPTED (Ctrl+C)         ║', 'yellow');
   log('  ╚═══════════════════════════════════════╝', 'yellow');
-  log('  Press Ctrl+C again to force quit\n', 'dim');
+  log('  Press Ctrl+C again within 3s to force quit\n', 'dim');
   
   const { action } = await prompts({
     type: 'select',
@@ -326,34 +326,47 @@ async function showInterruptMenu(): Promise<'continue' | 'followup' | 'save' | '
     
     // Show plan update UI
     await updatePlanWithFollowUp(message);
-    // Reset Ctrl+C count after plan update flow (prompts may have incremented it)
-    menuCtrlCCount = 0;
+    // Reset Ctrl+C count after successful plan update
+    ctrlCCount = 0;
     return 'continue'; // Continue with (possibly) updated plan
   }
   
   return action || 'continue';
 }
 
-// SIGINT handling - track count instead of timing to avoid race conditions
-let menuCtrlCCount = 0;
+// SIGINT handling - global counter for force quit (NEVER reset except on successful menu action)
+let ctrlCCount = 0;
+let lastCtrlCTime = 0;
 
-const menuSigintHandler = () => {
-  menuCtrlCCount++;
-  if (menuCtrlCCount >= 2) {
-    log('\n\n  [!] Force quit', 'red');
+// Force quit helper - called from any signal handler
+const checkForceQuit = () => {
+  const now = Date.now();
+  // Reset counter if more than 3 seconds since last Ctrl+C
+  if (now - lastCtrlCTime > 3000) {
+    ctrlCCount = 0;
+  }
+  lastCtrlCTime = now;
+  ctrlCCount++;
+  
+  if (ctrlCCount >= 2) {
+    // Force quit immediately - don't wait for anything
+    console.log('\n\n  [!] Force quit');
     process.exit(130);
   }
-  log('\n  [!] Press Ctrl+C again to force quit', 'yellow');
+  return false; // Not force quit yet
 };
 
 const mainSigintHandler = async () => {
+  // Always check force quit first
+  if (checkForceQuit()) return;
+  
+  // If already showing menu, just show message (force quit handled above)
   if (interruptPending) {
-    menuSigintHandler();
+    log('\n  [!] Press Ctrl+C again to force quit', 'yellow');
     return;
   }
   
   interruptPending = true;
-  menuCtrlCCount = 0;
   
   // Abort the current agent loop immediately
   if (currentAbortController) {
@@ -366,18 +379,12 @@ const mainSigintHandler = async () => {
     pauseResolver = resolve;
   });
   
-  // Swap to menu handler while menu is showing
-  process.removeListener('SIGINT', mainSigintHandler);
-  process.on('SIGINT', menuSigintHandler);
-  
   try {
     const action = await showInterruptMenu();
-    interruptPending = false;
-    menuCtrlCCount = 0;
     
-    // Restore main handler
-    process.removeListener('SIGINT', menuSigintHandler);
-    process.on('SIGINT', mainSigintHandler);
+    // Only reset counter on successful menu completion
+    ctrlCCount = 0;
+    interruptPending = false;
     
     // Clear pause state
     if (pauseResolver) {
@@ -401,10 +408,8 @@ const mainSigintHandler = async () => {
       log('  [>] Resuming agent...', 'green');
     }
   } catch {
+    // Menu was cancelled (e.g., by another Ctrl+C) - DON'T reset ctrlCCount
     interruptPending = false;
-    menuCtrlCCount = 0;
-    process.removeListener('SIGINT', menuSigintHandler);
-    process.on('SIGINT', mainSigintHandler);
     if (pauseResolver) {
       pauseResolver();
       pauseResolver = null;
@@ -418,7 +423,7 @@ const mainSigintHandler = async () => {
 process.on('SIGINT', mainSigintHandler);
 
 process.on('SIGTERM', () => {
-  // Treat SIGTERM same as SIGINT - show menu instead of immediately terminating
+  // Treat SIGTERM same as SIGINT
   mainSigintHandler();
 });
 

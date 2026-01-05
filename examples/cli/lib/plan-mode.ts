@@ -63,7 +63,7 @@ function handleAIError(error: unknown): never {
 export async function runPlanMode(localDir: string): Promise<PlanModeResult> {
   console.log();
   log('╭───────────────────────────────────────────────────────────────╮', 'dim');
-  log('│  Plan Mode - Describe your task and I\'ll create a plan       │', 'dim');
+  log('│  Plan Mode - Describe your task and I\'ll create a plan        │', 'dim');
   log('╰───────────────────────────────────────────────────────────────╯', 'dim');
   console.log();
 

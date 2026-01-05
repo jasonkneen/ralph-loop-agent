@@ -145,14 +145,52 @@ async function installPlaywright(): Promise<boolean> {
   const PLAYWRIGHT_CACHE = '/home/vercel-sandbox/.cache/ms-playwright';
   
   try {
-    // First, install system dependencies needed by Chromium
+    // First, install system dependencies needed by Chromium on Amazon Linux / Fedora / RHEL
     log('      Installing Chromium system dependencies...', 'dim');
-    const depsResult = await runInSandboxInternal(
-      'sudo dnf install -y nss nspr atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage libXrandr mesa-libgbm alsa-lib pango 2>&1'
+    
+    // Clean dnf cache first to avoid corruption issues
+    await runInSandboxInternal('sudo dnf clean all 2>&1');
+    
+    // Critical packages for Chromium - install in groups to be resilient
+    const criticalDeps = ['nss', 'nspr'];  // Required for libnspr4.so
+    const displayDeps = ['libxkbcommon', 'atk', 'at-spi2-atk', 'at-spi2-core'];
+    const xDeps = ['libXcomposite', 'libXdamage', 'libXrandr', 'libXfixes', 'libXcursor', 'libXi', 'libXtst', 'libXScrnSaver', 'libXext'];
+    const graphicsDeps = ['mesa-libgbm', 'libdrm', 'mesa-libGL', 'mesa-libEGL'];
+    const otherDeps = ['cups-libs', 'alsa-lib', 'pango', 'cairo', 'gtk3', 'dbus-libs'];
+    
+    // Install critical deps first (these are required)
+    const criticalResult = await runInSandboxInternal(
+      `sudo dnf install -y ${criticalDeps.join(' ')} 2>&1`
     );
-    if (depsResult.exitCode !== 0) {
-      log(`      System deps install warning: ${depsResult.stdout.slice(-200)}`, 'dim');
-      // Continue anyway, some deps might already be installed
+    if (criticalResult.exitCode !== 0) {
+      log(`      Critical deps failed, retrying with --allowerasing...`, 'dim');
+      await runInSandboxInternal(`sudo dnf install -y --allowerasing ${criticalDeps.join(' ')} 2>&1`);
+    }
+    
+    // Install other deps with --skip-broken
+    const allOtherDeps = [...displayDeps, ...xDeps, ...graphicsDeps, ...otherDeps];
+    await runInSandboxInternal(
+      `sudo dnf install -y --skip-broken ${allOtherDeps.join(' ')} 2>&1`
+    );
+    
+    // Run ldconfig to update library cache
+    await runInSandboxInternal('sudo ldconfig 2>&1');
+    
+    // Verify critical libraries are installed
+    const libCheck = await runInSandboxInternal('ldconfig -p | grep -E "libnspr4|libxkbcommon" 2>&1');
+    if (libCheck.stdout.includes('libnspr4') && libCheck.stdout.includes('libxkbcommon')) {
+      log('      Critical libraries verified: libnspr4, libxkbcommon', 'dim');
+    } else {
+      // Try to find what's missing
+      const nspr = await runInSandboxInternal('rpm -q nspr 2>&1');
+      const nss = await runInSandboxInternal('rpm -q nss 2>&1');
+      log(`      Library check: nspr=${nspr.stdout.trim()}, nss=${nss.stdout.trim()}`, 'dim');
+      
+      // Last resort: find the library files directly
+      const findLib = await runInSandboxInternal('find /usr -name "libnspr4*" 2>/dev/null | head -1');
+      if (findLib.stdout.trim()) {
+        log(`      Found libnspr4 at: ${findLib.stdout.trim()}`, 'dim');
+      }
     }
     
     // Install Playwright package globally

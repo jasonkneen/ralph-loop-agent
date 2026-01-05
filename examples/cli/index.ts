@@ -727,6 +727,27 @@ Sandbox dev server URL: ${sandboxDomain}`;
     onIterationEnd: ({ iteration, duration, result }: { iteration: number; duration: number; result: GenerateTextResult<CodingTools, never> }) => {
       log(`      Duration: ${duration}ms`, 'dim');
       
+      // Debug: show per-step usage
+      log(`      Steps: ${result.steps.length}`, 'dim');
+      log(`      result.usage: in=${result.usage.inputTokens}, out=${result.usage.outputTokens}`, 'dim');
+      
+      let stepInputSum = 0;
+      let stepOutputSum = 0;
+      let cacheReadSum = 0;
+      let cacheWriteSum = 0;
+      for (const step of result.steps) {
+        if (step.usage) {
+          stepInputSum += step.usage.inputTokens ?? 0;
+          stepOutputSum += step.usage.outputTokens ?? 0;
+          cacheReadSum += step.usage.inputTokenDetails?.cacheReadTokens ?? 0;
+          cacheWriteSum += step.usage.inputTokenDetails?.cacheWriteTokens ?? 0;
+        }
+      }
+      log(`      step sum: in=${stepInputSum}, out=${stepOutputSum}`, 'dim');
+      if (cacheReadSum > 0 || cacheWriteSum > 0) {
+        log(`      cache: read=${cacheReadSum}, write=${cacheWriteSum}`, 'dim');
+      }
+      
       // Aggregate usage from all steps for accurate token counts
       const iterationUsage = aggregateStepUsage(result);
       

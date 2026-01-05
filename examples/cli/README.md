@@ -1,4 +1,4 @@
-# Ralph Wiggum CLI Example
+# Ralph CLI Example
 
 A general-purpose autonomous coding agent for long-running tasks like:
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * Ralph Wiggum CLI Example - Autonomous Coding Agent
+ * Ralph CLI Example - Autonomous Coding Agent
  *
  * A general-purpose agent for long-running autonomous coding tasks like:
  * - Code migrations (Jest → Vitest, CJS → ESM, etc.)
@@ -75,8 +75,7 @@ let lastFilesModified: string[] = [];
 
 async function main() {
   log('╔════════════════════════════════════════════════════════════╗', 'magenta');
-  log('║      Ralph Wiggum CLI Example - Autonomous Coding Agent    ║', 'magenta');
-  log('║                  🔒 Secure Sandbox Mode 🔒                  ║', 'magenta');
+  log('║         Ralph CLI Example - Autonomous Coding Agent        ║', 'magenta');
   log('╚════════════════════════════════════════════════════════════╝', 'magenta');
 
   // Check if local directory exists, offer to create if not

@@ -1,5 +1,7 @@
 # Ralph CLI Example
 
+> **Note**: This package is experimental. APIs may change between versions.
+
 A general-purpose autonomous coding agent for long-running tasks like:
 
 - **Code migrations** (Jest → Vitest, CJS → ESM, etc.)

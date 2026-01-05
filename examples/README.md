@@ -1,5 +1,7 @@
 # Examples
 
+> **Note**: This package is experimental. APIs may change between versions.
+
 This directory contains example projects demonstrating how to use `ralph-loop-agent`.
 
 ## Examples

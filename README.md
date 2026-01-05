@@ -2,9 +2,7 @@
 
 **Continuous Autonomy for the [AI SDK](https://ai-sdk.dev/)**
 
-> **⚠️ EXPERIMENTAL - USE AT YOUR OWN RISK**
->
-> This package is highly experimental. The iterative nature of the Ralph Wiggum technique can result in **high token usage and significant costs**. Each iteration consumes tokens, and the agent may run multiple iterations before completing a task. Monitor your usage carefully and set appropriate `stopWhen` limits.
+> **Note**: This package is experimental. APIs may change between versions.
 
 ## Installation
 

@@ -24,7 +24,7 @@ npm install ralph-loop-agent ai zod
 
 ## What is the Ralph Wiggum Technique?
 
-The Ralph Wiggum technique is a development methodology built around continuous AI agent loops. At its core, it's elegantly simple: keep feeding an AI agent a task until the job is done.
+The Ralph Wiggum technique is a development methodology built around continuous AI agent loops. At its core, it's elegantly simple: keep feeding an AI agent a task until the job is done. As Geoffrey Huntley describes it: **"Ralph is a Bash loop."**
 
 Named after the lovably persistent Ralph Wiggum from *The Simpsons*, this approach embraces iterative improvement over single-shot perfection. Where traditional agentic workflows stop when an LLM finishes calling tools, Ralph keeps going—verifying completion, providing feedback, and running another iteration until the task actually succeeds.
 

@@ -15,6 +15,7 @@ export {
   getModelPricing,
   calculateCost,
   addLanguageModelUsage,
+  aggregateStepUsage,
 } from './ralph-stop-condition';
 export type {
   RalphStopCondition,

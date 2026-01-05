@@ -16,6 +16,7 @@ import {
   iterationCountIs,
   isRalphStopConditionMet,
   addLanguageModelUsage,
+  aggregateStepUsage,
   type RalphStopCondition,
   type RalphStopConditionContext,
 } from './ralph-stop-condition';
@@ -355,8 +356,9 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
 
       allResults.push(result);
 
-      // Update total usage
-      totalUsage = addLanguageModelUsage(totalUsage, result.usage);
+      // Update total usage - aggregate from steps for more accurate counts
+      const iterationUsage = aggregateStepUsage(result);
+      totalUsage = addLanguageModelUsage(totalUsage, iterationUsage);
 
       // Add the response messages to conversation history
       currentMessages = [...currentMessages, ...result.response.messages];
@@ -523,7 +525,8 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
       })) as GenerateTextResult<TOOLS, never>;
 
       allResults.push(result);
-      totalUsage = addLanguageModelUsage(totalUsage, result.usage);
+      const iterationUsage = aggregateStepUsage(result);
+      totalUsage = addLanguageModelUsage(totalUsage, iterationUsage);
       currentMessages = [...currentMessages, ...result.response.messages];
 
       const duration = Date.now() - startTime;

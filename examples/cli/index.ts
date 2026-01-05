@@ -26,7 +26,7 @@
 // Load environment variables from .env file
 import 'dotenv/config';
 
-import { RalphLoopAgent, iterationCountIs, addLanguageModelUsage, type VerifyCompletionContext } from 'ralph-loop-agent';
+import { RalphLoopAgent, iterationCountIs, addLanguageModelUsage, aggregateStepUsage, type VerifyCompletionContext } from 'ralph-loop-agent';
 import type { LanguageModelUsage, GenerateTextResult } from 'ai';
 import { generateText } from 'ai';
 import * as fs from 'fs/promises';
@@ -727,11 +727,14 @@ Sandbox dev server URL: ${sandboxDomain}`;
     onIterationEnd: ({ iteration, duration, result }: { iteration: number; duration: number; result: GenerateTextResult<CodingTools, never> }) => {
       log(`      Duration: ${duration}ms`, 'dim');
       
+      // Aggregate usage from all steps for accurate token counts
+      const iterationUsage = aggregateStepUsage(result);
+      
       // Update running usage
-      runningUsage = addLanguageModelUsage(runningUsage, result.usage);
+      runningUsage = addLanguageModelUsage(runningUsage, iterationUsage);
       
       // Show usage report for this iteration
-      logUsageReport(result.usage, AGENT_MODEL, `Iteration ${iteration}`);
+      logUsageReport(iterationUsage, AGENT_MODEL, `Iteration ${iteration}`);
       logUsageReport(runningUsage, AGENT_MODEL, 'Running Total');
     },
 

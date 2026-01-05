@@ -1,4 +1,4 @@
-import type { GenerateTextResult, ToolSet } from 'ai';
+import type { GenerateTextResult, ToolSet, StepResult } from 'ai';
 import type { LanguageModelUsage } from 'ai';
 
 /**
@@ -122,6 +122,49 @@ export function addLanguageModelUsage(
       ),
     },
     totalTokens: addTokenCounts(usage1.totalTokens, usage2.totalTokens),
+  };
+}
+
+/**
+ * Aggregate usage from all steps in a generateText result.
+ * This provides more accurate token counts than result.usage alone,
+ * which may not include all tool call tokens.
+ */
+export function aggregateStepUsage<TOOLS extends ToolSet>(
+  result: GenerateTextResult<TOOLS, never>
+): LanguageModelUsage {
+  // Start with zero usage
+  let aggregated: LanguageModelUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    inputTokenDetails: {
+      noCacheTokens: undefined,
+      cacheReadTokens: undefined,
+      cacheWriteTokens: undefined,
+    },
+    outputTokenDetails: {
+      textTokens: undefined,
+      reasoningTokens: undefined,
+    },
+  };
+
+  // Sum up usage from each step
+  for (const step of result.steps) {
+    if (step.usage) {
+      aggregated = addLanguageModelUsage(aggregated, step.usage);
+    }
+  }
+
+  // Compare with result.usage and use the higher values
+  // (in case provider reports differently at different levels)
+  const resultUsage = result.usage;
+  return {
+    inputTokens: Math.max(aggregated.inputTokens ?? 0, resultUsage.inputTokens ?? 0),
+    outputTokens: Math.max(aggregated.outputTokens ?? 0, resultUsage.outputTokens ?? 0),
+    totalTokens: Math.max(aggregated.totalTokens ?? 0, resultUsage.totalTokens ?? 0),
+    inputTokenDetails: aggregated.inputTokenDetails,
+    outputTokenDetails: aggregated.outputTokenDetails,
   };
 }
 

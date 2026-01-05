@@ -111,6 +111,11 @@ let currentTaskPrompt = '';
 let pausePromise: Promise<void> | null = null;
 let pauseResolver: (() => void) | null = null;
 
+// Abort controller for stopping the agent mid-iteration
+let currentAbortController: AbortController | null = null;
+let shouldResumeAfterMenu = false;
+let lastIterationCount = 0;
+
 // Cleanup function - just closes sandbox, doesn't copy files
 async function cleanup(exitCode: number = 0) {
   if (isCleaningUp) return;
@@ -350,6 +355,12 @@ const mainSigintHandler = async () => {
   interruptPending = true;
   menuCtrlCCount = 0;
   
+  // Abort the current agent loop immediately
+  if (currentAbortController) {
+    log('\n  [~] Pausing agent...', 'yellow');
+    currentAbortController.abort();
+  }
+  
   // Create pause promise - verifyCompletion will await this
   pausePromise = new Promise<void>((resolve) => {
     pauseResolver = resolve;
@@ -368,31 +379,26 @@ const mainSigintHandler = async () => {
     process.removeListener('SIGINT', menuSigintHandler);
     process.on('SIGINT', mainSigintHandler);
     
+    // Clear pause state
+    if (pauseResolver) {
+      pauseResolver();
+      pauseResolver = null;
+      pausePromise = null;
+    }
+    
     if (action === 'quit') {
-      if (pauseResolver) {
-        pauseResolver();
-        pauseResolver = null;
-        pausePromise = null;
-      }
+      shouldResumeAfterMenu = false;
       await cleanup(130);
     } else if (action === 'save') {
-      if (pauseResolver) {
-        pauseResolver();
-        pauseResolver = null;
-        pausePromise = null;
-      }
+      shouldResumeAfterMenu = false;
       await saveAndCleanup(0);
     } else if (action === 'continue' || action === 'followup') {
       if (interruptResolver) {
         interruptResolver(action);
         interruptResolver = null;
       }
-      log('  [>] Resuming...', 'green');
-      if (pauseResolver) {
-        pauseResolver();
-        pauseResolver = null;
-        pausePromise = null;
-      }
+      shouldResumeAfterMenu = true;
+      log('  [>] Resuming agent...', 'green');
     }
   } catch {
     interruptPending = false;
@@ -404,7 +410,8 @@ const mainSigintHandler = async () => {
       pauseResolver = null;
       pausePromise = null;
     }
-    log('  [>] Resuming...', 'green');
+    shouldResumeAfterMenu = true;
+    log('  [>] Resuming agent...', 'green');
   }
 };
 
@@ -738,69 +745,130 @@ Sandbox dev server URL: ${sandboxDomain}`;
   log(`Dev server URL: ${sandboxDomain}`, 'blue');
 
   const startTime = Date.now();
+  let finalResult: Awaited<ReturnType<typeof agent.loop>> | null = null;
+  let preserveContext = false;
 
-  try {
-    const result = await agent.loop({
-      prompt: taskPrompt,
-    });
+  // Main loop that handles abort/resume
+  while (true) {
+    currentAbortController = new AbortController();
+    shouldResumeAfterMenu = false;
 
-    const totalDuration = Date.now() - startTime;
+    try {
+      const result = await agent.loop({
+        prompt: preserveContext 
+          ? (pendingPlanUpdate || 'Continue working on the task from where you left off.')
+          : taskPrompt,
+        abortSignal: currentAbortController.signal,
+        preserveContext,
+        startIteration: lastIterationCount,
+      });
 
-    logSection('Result');
-    log(`Status: ${result.completionReason}`, result.completionReason === 'verified' ? 'green' : 'yellow');
-    log(`Iterations: ${result.iterations}`, 'blue');
-    log(`Total time: ${Math.round(totalDuration / 1000)}s`, 'blue');
+      // Clear any pending plan update that was used
+      if (preserveContext && pendingPlanUpdate) {
+        pendingPlanUpdate = null;
+      }
 
-    // Show final usage report
-    logSection('Final Usage Report');
-    logUsageReport(result.totalUsage, AGENT_MODEL, 'Total');
+      lastIterationCount = result.iterations;
+      finalResult = result;
 
-    if (result.reason) {
-      logSection('Summary');
-      log(result.reason, 'bright');
-    }
-
-    logSection('Final Notes');
-    console.log(result.text);
-
-    // Handle successful completion
-    if (result.completionReason === 'verified') {
-      if (repoInfo && taskSummary) {
-        // Repo mode: close sandbox (copies files back), then create PR
-        await closeSandbox(resolvedDir);
-        sandboxInitialized = false;
-        
-        // Create PR workflow (on host, not sandbox)
-        try {
-          const { branchName, prUrl } = await createPullRequestWorkflow(
-            resolvedDir,
-            taskPrompt,
-            taskSummary
-          );
-          
-          if (prUrl) {
-            logSection('Pull Request');
-            log(`Branch: ${branchName}`, 'blue');
-            log(`PR: ${prUrl}`, 'green');
-          }
-        } catch (error) {
-          log(`  [!] Failed to create PR: ${error}`, 'yellow');
+      // Check if aborted - wait for menu to complete
+      if (result.completionReason === 'aborted') {
+        // Wait for menu interaction to complete
+        while (interruptPending) {
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        process.exit(0);
-      } else {
-        // Local mode: save changes back to local directory
-        await saveAndCleanup(0);
+        if (shouldResumeAfterMenu) {
+          preserveContext = true;
+          log('  [>] Continuing from iteration ' + lastIterationCount + '...', 'blue');
+          continue; // Resume the loop
+        } else {
+          // User chose quit or save - exit the loop
+          break;
+        }
       }
-    } else {
-      // Not verified (max iterations, aborted, etc.) - don't auto-save
-      await cleanup(0);
-    }
 
-  } catch (error) {
-    logSection('Error');
-    console.error(error);
-    await cleanup(1);
+      // Normal completion - exit the loop
+      break;
+    } catch (error: any) {
+      // Check if this was an abort error
+      if (error?.name === 'AbortError' || currentAbortController.signal.aborted) {
+        // Wait for menu interaction to complete
+        while (interruptPending) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        if (shouldResumeAfterMenu) {
+          preserveContext = true;
+          continue; // Resume the loop
+        } else {
+          break;
+        }
+      }
+      // Re-throw other errors
+      throw error;
+    }
+  }
+
+  currentAbortController = null;
+
+  if (!finalResult) {
+    // User quit without completing
+    return;
+  }
+
+  const result = finalResult;
+  const totalDuration = Date.now() - startTime;
+
+  logSection('Result');
+  log(`Status: ${result.completionReason}`, result.completionReason === 'verified' ? 'green' : 'yellow');
+  log(`Iterations: ${result.iterations}`, 'blue');
+  log(`Total time: ${Math.round(totalDuration / 1000)}s`, 'blue');
+
+  // Show final usage report
+  logSection('Final Usage Report');
+  logUsageReport(result.totalUsage, AGENT_MODEL, 'Total');
+
+  if (result.reason) {
+    logSection('Summary');
+    log(result.reason, 'bright');
+  }
+
+  logSection('Final Notes');
+  console.log(result.text);
+
+  // Handle successful completion
+  if (result.completionReason === 'verified') {
+    if (repoInfo && taskSummary) {
+      // Repo mode: close sandbox (copies files back), then create PR
+      await closeSandbox(resolvedDir);
+      sandboxInitialized = false;
+      
+      // Create PR workflow (on host, not sandbox)
+      try {
+        const { branchName, prUrl } = await createPullRequestWorkflow(
+          resolvedDir,
+          taskPrompt,
+          taskSummary
+        );
+        
+        if (prUrl) {
+          logSection('Pull Request');
+          log(`Branch: ${branchName}`, 'blue');
+          log(`PR: ${prUrl}`, 'green');
+        }
+      } catch (error) {
+        log(`  [!] Failed to create PR: ${error}`, 'yellow');
+      }
+      
+      process.exit(0);
+    } else {
+      // Local mode: save changes back to local directory
+      await saveAndCleanup(0);
+    }
+  } else {
+    // Not verified (max iterations, aborted, etc.) - don't auto-save
+    await cleanup(0);
   }
 }
 

@@ -37,6 +37,17 @@ export type RalphLoopAgentCallParameters = {
    * Abort signal for cancellation.
    */
   abortSignal?: AbortSignal;
+
+  /**
+   * If true, preserve context from previous loop() calls instead of clearing.
+   * Useful for resuming after an abort.
+   */
+  preserveContext?: boolean;
+
+  /**
+   * Starting iteration number (for resuming). Defaults to 0.
+   */
+  startIteration?: number;
 };
 
 /**
@@ -192,10 +203,12 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
   async loop({
     prompt,
     abortSignal,
+    preserveContext = false,
+    startIteration = 0,
   }: RalphLoopAgentCallParameters): Promise<RalphLoopAgentResult<TOOLS>> {
     const allResults: Array<GenerateTextResult<TOOLS, never>> = [];
     let currentMessages: Array<ModelMessage> = [];
-    let iteration = 0;
+    let iteration = startIteration;
     let totalUsage: LanguageModelUsage = this.createEmptyUsage();
     let completionReason: RalphLoopAgentResult<TOOLS>['completionReason'] = 'max-iterations';
     let reason: string | undefined;
@@ -204,8 +217,10 @@ export class RalphLoopAgent<TOOLS extends ToolSet = {}> {
     const modelId = this.getModelId();
     const model = this.settings.model;
 
-    // Reset context manager for new loop
-    this.contextManager?.clear();
+    // Reset context manager for new loop (unless preserving context for resume)
+    if (!preserveContext) {
+      this.contextManager?.clear();
+    }
 
     // Build the initial user message
     const initialUserMessage: ModelMessage = {

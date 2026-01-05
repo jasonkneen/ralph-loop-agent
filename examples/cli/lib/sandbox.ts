@@ -329,18 +329,126 @@ async function copyLocalToSandbox(localDir: string): Promise<void> {
   
   // Files/folders to NEVER copy to sandbox (regardless of gitignore)
   const shouldAlwaysSkip = (name: string, isDirectory: boolean) => {
-    // .env files (security: prevent leaking secrets)
+    // ===== SENSITIVE FILES (security: prevent leaking secrets) =====
+    
+    // Environment files
     if (name === '.env' || name.startsWith('.env.')) {
       return true;
     }
-    // macOS metadata files
-    if (name === '.DS_Store') {
+    
+    // Private keys and certificates
+    if (name.endsWith('.pem') || name.endsWith('.key') || name.endsWith('.p12') || name.endsWith('.pfx')) {
       return true;
     }
-    // node_modules (too large, will be installed fresh in sandbox)
-    if (isDirectory && name === 'node_modules') {
+    if (name === 'id_rsa' || name === 'id_ed25519' || name === 'id_dsa' || name === 'id_ecdsa') {
       return true;
     }
+    if (name.endsWith('.pub') && (name.startsWith('id_') || name.includes('ssh'))) {
+      // Skip SSH public keys too (not secret but not needed)
+      return true;
+    }
+    
+    // Credential/config files that often contain tokens
+    const sensitiveFiles = [
+      '.npmrc',           // npm tokens
+      '.yarnrc',          // yarn tokens  
+      '.yarnrc.yml',      // yarn 2+ tokens
+      '.netrc',           // machine credentials
+      '.pypirc',          // PyPI credentials
+      '.docker/config.json', // Docker registry auth
+      '.kube/config',     // Kubernetes credentials
+      'credentials.json', // Generic credentials (often GCP)
+      'secrets.json',     // Generic secrets
+      'secrets.yaml',     // Generic secrets
+      'secrets.yml',      // Generic secrets
+      '.htpasswd',        // Apache passwords
+    ];
+    if (sensitiveFiles.includes(name)) {
+      return true;
+    }
+    
+    // Service account files (GCP, Firebase, etc.)
+    if (name.includes('service-account') || name.includes('serviceAccount')) {
+      if (name.endsWith('.json') || name.endsWith('.key')) {
+        return true;
+      }
+    }
+    
+    // History files (may contain sensitive commands)
+    if (name.startsWith('.') && name.endsWith('_history')) {
+      return true;
+    }
+    if (name === '.node_repl_history' || name === '.python_history') {
+      return true;
+    }
+    
+    // ===== SENSITIVE DIRECTORIES =====
+    if (isDirectory) {
+      const sensitiveDirs = [
+        '.ssh',       // SSH keys
+        '.gnupg',     // GPG keys
+        '.aws',       // AWS credentials
+        '.azure',     // Azure credentials
+        '.config',    // Often contains cloud CLI credentials
+      ];
+      if (sensitiveDirs.includes(name)) {
+        return true;
+      }
+    }
+    
+    // ===== OS METADATA FILES =====
+    if (name === '.DS_Store' || name === 'Thumbs.db' || name === 'Desktop.ini') {
+      return true;
+    }
+    
+    // ===== DEPENDENCY AND BUILD FOLDERS (too large) =====
+    if (isDirectory) {
+      const skipDirs = [
+        // JavaScript/Node
+        'node_modules',
+        '.npm',
+        '.pnpm-store',
+        // Python
+        'venv',
+        '.venv',
+        '__pycache__',
+        '.pytest_cache',
+        '.mypy_cache',
+        '.ruff_cache',
+        // Rust
+        'target',
+        // Java/Kotlin/Gradle
+        'build',
+        '.gradle',
+        // .NET
+        'bin',
+        'obj',
+        'packages',
+        // PHP
+        'vendor',
+        // iOS/macOS
+        'Pods',
+        'DerivedData',
+        // Ruby
+        '.bundle',
+        // General
+        '.cache',
+        'dist',
+        '.next',
+        '.nuxt',
+        '.output',
+        '.turbo',
+      ];
+      if (skipDirs.includes(name)) {
+        return true;
+      }
+    }
+    
+    // Python bytecode
+    if (name.endsWith('.pyc') || name.endsWith('.pyo')) {
+      return true;
+    }
+    
     return false;
   };
   

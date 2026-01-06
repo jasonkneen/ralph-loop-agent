@@ -4,3 +4,6 @@ tasks/
 tmp/
 .turbo/
 .env*
+
+# opensrc - source code for packages
+opensrc/
